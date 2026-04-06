@@ -4,7 +4,8 @@ import streamlit as st
 import pandas as pd
 
 from config import ACCENT, RED, YELLOW, BLUE, MUTED, TEXT, CARD_BG, BORDER, BG
-from data.loader import load_latest_market, load_sector_map, load_sector_performance
+from data.loader import load_latest_market, load_sector_map, load_sector_performance, load_date_bounds
+from datetime import timedelta
 from charts.market_overview import (
     sector_treemap, sector_bar,
     volume_leaders_bar, price_change_scatter,
@@ -14,6 +15,17 @@ from charts.market_overview import (
 # ── CSS ───────────────────────────────────────────────────────────────────────
 _CSS = f"""
 <style>
+/* ── Sticky date header ── */
+.sticky-header {{
+    position: sticky;
+    top: 0;
+    z-index: 50;
+    background: {BG};
+    padding: 10px 0 14px 0;
+    margin-bottom: 6px;
+    border-bottom: 1px solid {BORDER};
+}}
+
 /* ── Stat cards ── */
 .stat-bar {{
     display: flex;
@@ -213,17 +225,41 @@ def _price_list_table(df: pd.DataFrame, search: str) -> str:
 def render():
     st.markdown(_CSS, unsafe_allow_html=True)
 
+    # ── Date range picker ─────────────────────────────────────────────────────
+    min_date, max_date = load_date_bounds()
+    default_start = max_date - timedelta(days=90)
+
+    ctrl_l, ctrl_r, _ = st.columns([1.6, 1.6, 5])
+    with ctrl_l:
+        start_date = st.date_input(
+            "From", value=default_start,
+            min_value=min_date, max_value=max_date,
+            key="mo_start",
+        )
+    with ctrl_r:
+        end_date = st.date_input(
+            "To", value=max_date,
+            min_value=min_date, max_value=max_date,
+            key="mo_end",
+        )
+
+    if start_date > end_date:
+        st.error("'From' date must be before 'To' date.")
+        return
+
+    end_date_str = str(end_date)
+
     # ── Load data ─────────────────────────────────────────────────────────────
     with st.spinner(""):
         sector_map  = load_sector_map()
-        market_df   = load_latest_market(sector_map)
-        sector_df   = load_sector_performance()
+        market_df   = load_latest_market(sector_map, end_date=end_date_str)
+        sector_df   = load_sector_performance(end_date=end_date_str)
 
     if market_df.empty:
-        st.warning("No market data available.")
+        st.warning("No market data available for the selected range.")
         return
 
-    latest_date = market_df["TradeDate"].max().strftime("%d %b %Y")
+    latest_date = market_df["TradeDate"].max()
 
     # ── Derived stats ─────────────────────────────────────────────────────────
     total_stocks   = len(market_df)
@@ -237,12 +273,23 @@ def render():
         if not sector_df.empty else "—"
     )
 
-    # ── Stat bar ──────────────────────────────────────────────────────────────
-    st.markdown(
-        f"<div style='color:{MUTED};font-size:9px;letter-spacing:2px;"
-        f"margin-bottom:8px'>AS AT {latest_date}</div>",
-        unsafe_allow_html=True,
-    )
+    # ── Sticky date range header ──────────────────────────────────────────────
+    st.markdown(f"""
+        <div class='sticky-header'>
+            <div style='display:flex;align-items:baseline;gap:12px;
+                        border-left:3px solid {ACCENT};padding-left:12px'>
+                <div style='color:{TEXT};font-size:20px;font-weight:700;letter-spacing:1px'>
+                    {latest_date.strftime("%d %b %Y")}
+                </div>
+                <div style='color:{MUTED};font-size:10px;letter-spacing:1.5px'>
+                    LATEST TRADING DAY
+                    &nbsp;<span style='color:{BORDER}'>|</span>&nbsp;
+                    {start_date.strftime("%d %b %Y")} – {end_date.strftime("%d %b %Y")}
+                </div>
+            </div>
+        </div>
+        <div style='height:16px'></div>
+    """, unsafe_allow_html=True)
     stats_html = "".join([
         _stat_card("LISTED STOCKS",   str(total_stocks),    "on NGX"),
         _stat_card("MARKET VALUE",     _fmt_naira(total_value), "total traded"),

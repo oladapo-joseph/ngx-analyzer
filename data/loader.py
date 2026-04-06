@@ -40,6 +40,17 @@ def load_stock_data(Symbol: str) -> tuple[pd.DataFrame, pd.DataFrame]:
 
 
 @st.cache_data(ttl=600, show_spinner=False)
+def load_date_bounds() -> tuple:
+    """Return (min_date, max_date) as datetime.date from the Trades table."""
+    conn = connect_to_db(_DB_PATH)
+    row = conn.execute("SELECT MIN(TradeDate), MAX(TradeDate) FROM Trades").fetchone()
+    close_connection(conn)
+    min_d = pd.to_datetime(row[0]).date()
+    max_d = pd.to_datetime(row[1]).date()
+    return min_d, max_d
+
+
+@st.cache_data(ttl=600, show_spinner=False)
 def load_sector_map() -> pd.DataFrame:
     """Return DataFrame with columns Symbol, Sector."""
     conn = connect_to_db(_DB_PATH)
@@ -60,21 +71,25 @@ def filter_by_dates(
 
 
 @st.cache_data(ttl=300, show_spinner=False)
-def load_latest_market(sector_map: pd.DataFrame = None) -> pd.DataFrame:
+def load_latest_market(sector_map: pd.DataFrame = None, end_date=None) -> pd.DataFrame:
     """
-    Return one row per Symbol for the most recent trading date,
+    Return one row per Symbol for the most recent trading date up to end_date,
     with % Change and optionally Sector joined in.
     """
     conn = connect_to_db(_DB_PATH)
-    query = """
+    date_filter = f"AND t.TradeDate <= '{end_date}'" if end_date else ""
+    inner_filter = f"WHERE TradeDate <= '{end_date}'" if end_date else ""
+    query = f"""
         SELECT DISTINCT t.*
         FROM Trades t
         INNER JOIN (
             SELECT Symbol, MAX(TradeDate) AS LatestDate
             FROM Trades
+            {inner_filter}
             GROUP BY Symbol
         ) latest
         ON t.Symbol = latest.Symbol AND t.TradeDate = latest.LatestDate
+        {date_filter}
     """
     df = pd.read_sql_query(query, conn)
     close_connection(conn)
@@ -92,12 +107,14 @@ def load_latest_market(sector_map: pd.DataFrame = None) -> pd.DataFrame:
 
 
 @st.cache_data(ttl=300, show_spinner=False)
-def load_sector_performance() -> pd.DataFrame:
+def load_sector_performance(end_date=None) -> pd.DataFrame:
     """
-    Return avg % change and total value per sector for the latest trading day.
+    Return avg % change and total value per sector for the latest trading day
+    up to end_date.
     """
     conn = connect_to_db(_DB_PATH)
-    query = """
+    inner_filter = f"WHERE TradeDate <= '{end_date}'" if end_date else ""
+    query = f"""
         SELECT si.Sector,
                AVG((t.ClosePrice - t.PrevClosingPrice)
                    / NULLIF(t.PrevClosingPrice, 0) * 100) AS AvgPctChange,
@@ -108,6 +125,7 @@ def load_sector_performance() -> pd.DataFrame:
         INNER JOIN (
             SELECT Symbol, MAX(TradeDate) AS LatestDate
             FROM Trades
+            {inner_filter}
             GROUP BY Symbol
         ) latest ON t.Symbol = latest.Symbol AND t.TradeDate = latest.LatestDate
         INNER JOIN IndustryData si ON t.Symbol = si.Symbol

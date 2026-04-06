@@ -5,9 +5,9 @@ import pandas as pd
 from datetime import datetime, timedelta
 
 from config import ACCENT, RED, YELLOW, MUTED, TEXT, CARD_BG, BORDER, BG
-from data.loader import load_stock_list, load_stock_data, filter_by_dates
+from data.loader import load_stock_list, load_stock_data, filter_by_dates, load_date_bounds
 from analysis.signals import get_signals, STRATEGIES
-from analysis.recommender import generate_recommendation
+from analysis.recommender import generate_recommendation, LLM_OPTIONS
 from charts.deep_dive import build_main_chart, build_signal_chart, empty_fig
 
 
@@ -117,6 +117,20 @@ div[data-testid="stButton"] > button {{
 div[data-testid="stButton"] > button:hover {{
     background: {ACCENT}22 !important;
 }}
+
+/* ── Quick-range shortcut buttons ── */
+button[data-testid="baseButton-secondary"] {{
+    background: transparent !important;
+    border: 1px solid {BORDER} !important;
+    color: {MUTED} !important;
+    font-size: 10px !important;
+    letter-spacing: 1px !important;
+    padding: 4px 0 !important;
+}}
+button[data-testid="baseButton-secondary"]:hover {{
+    border-color: {ACCENT} !important;
+    color: {ACCENT} !important;
+}}
 </style>
 """
 
@@ -188,61 +202,97 @@ def render():
     st.markdown(_CSS, unsafe_allow_html=True)
 
     symbols = load_stock_list()
-    today   = datetime.today().date()
+    min_date, max_date = load_date_bounds()
 
-    # ── Control bar (inline, above chart) ────────────────────────────────────
-    c1, c2, c3, c4, c5, c6 = st.columns([2, 1.4, 1.2, 2, 2, 1.8])
-
-    with c1:
+    # ── Row 1: stock selector (always active) ─────────────────────────────────
+    s_col, hint_col = st.columns([2.2, 6])
+    with s_col:
         symbol = st.selectbox(
             "STOCK", options=symbols,
             index=None, placeholder="Select symbol…",
             label_visibility="visible",
         )
+    with hint_col:
+        if not symbol:
+            st.markdown(
+                f"<div style='padding:28px 0 0 4px;color:{MUTED};"
+                f"font-size:11px;letter-spacing:1px'>"
+                f"← Select a stock to unlock filters</div>",
+                unsafe_allow_html=True,
+            )
+
+    locked = not symbol
+
+    # ── Row 2: chart options (disabled until stock selected) ──────────────────
+    c2, c3, c4, c5 = st.columns([1.2, 2, 2, 1.8])
+
     with c2:
-        quick = st.radio(
-            "RANGE", ["1M", "3M", "6M", "1Y", "ALL"],
-            horizontal=True, index=1,
-        )
-    with c3:
         chart_type = st.radio(
             "TYPE", ["Candle", "Line"],
             horizontal=True, index=0,
+            disabled=locked,
         )
         chart_type = "candle" if chart_type == "Candle" else "line"
-    with c4:
+    with c3:
         overlays = st.multiselect(
             "OVERLAYS",
             ["SMA_50", "SMA_200", "EMA_12", "EMA_26"],
             default=[],
             format_func=lambda x: x.replace("_", " "),
+            disabled=locked,
         )
-    with c5:
+    with c4:
         panels = st.multiselect(
             "PANELS", ["volume", "macd", "rsi"],
             default=["volume", "macd", "rsi"],
             format_func=str.upper,
+            disabled=locked,
         )
-    with c6:
+    with c5:
         strategy = st.selectbox(
             "STRATEGY", list(STRATEGIES.keys()),
             index=0,
+            disabled=locked,
         )
 
-    # Resolve date range
-    quick_map = {"1M": 30, "3M": 90, "6M": 180, "1Y": 365}
-    if quick == "ALL":
-        start_date, end_date = None, None
-    else:
-        end_date   = today
-        start_date = today - timedelta(days=quick_map[quick])
+    # ── Row 3: date range (disabled until stock selected) ─────────────────────
+    d_col1, d_col2, d_col3 = st.columns([1.6, 1.6, 4])
 
-    # ── Guard: no stock selected ──────────────────────────────────────────────
-    if not symbol:
-        st.plotly_chart(
-            empty_fig("↑ Select a stock to begin"),
-            use_container_width=True,
+    with d_col1:
+        start_date = st.date_input(
+            "From", value=max_date - timedelta(days=90),
+            min_value=min_date, max_value=max_date,
+            key="dd_start", disabled=locked,
         )
+    with d_col2:
+        end_date = st.date_input(
+            "To", value=max_date,
+            min_value=min_date, max_value=max_date,
+            key="dd_end", disabled=locked,
+        )
+    with d_col3:
+        st.markdown("<div style='height:20px'></div>", unsafe_allow_html=True)
+        q1, q2, q3, q4, q5 = st.columns(5)
+        for col, label, days in [
+            (q1, "1M", 30), (q2, "3M", 90), (q3, "6M", 180),
+            (q4, "1Y", 365), (q5, "ALL", None),
+        ]:
+            with col:
+                if st.button(label, key=f"quick_{label}",
+                             use_container_width=True, disabled=locked):
+                    st.session_state.dd_end   = max_date
+                    st.session_state.dd_start = (
+                        max_date - timedelta(days=days) if days else min_date
+                    )
+                    st.rerun()
+
+    # ── Guards ────────────────────────────────────────────────────────────────
+    if locked:
+        st.plotly_chart(empty_fig("↑ Select a stock to begin"), use_container_width=True)
+        return
+
+    if start_date > end_date:
+        st.error("'From' date must be before 'To' date.")
         return
 
     # ── Load & filter data ────────────────────────────────────────────────────
@@ -312,21 +362,46 @@ def render():
         st.markdown("<div class='section-label'>💡 RECOMMENDATION</div>",
                     unsafe_allow_html=True)
 
+        is_admin = st.session_state.get("auth_user", {}).get("role") == "admin"
+
+        # ── LLM selector (non-admin only) ─────────────────────────────────────
+        if is_admin:
+            selected_llm = st.session_state.get("llm_provider", LLM_OPTIONS[0])
+            user_api_key = None  # uses env variable
+        else:
+            selected_llm = st.selectbox(
+                "LLM", LLM_OPTIONS,
+                index=LLM_OPTIONS.index(st.session_state.get("llm_provider", LLM_OPTIONS[0])),
+                key="llm_provider",
+                label_visibility="visible",
+            )
+            user_api_key = st.text_input(
+                "API Key",
+                type="password",
+                placeholder=f"Paste your {selected_llm.split()[0]} API key…",
+                key="user_api_key",
+                label_visibility="visible",
+            ) or None
+
         if st.button("Generate / Refresh"):
             if buy_df.empty and sell_df.empty:
                 st.warning("No signals to analyse.")
+            elif not is_admin and not user_api_key:
+                st.warning("Please enter your API key above.")
             else:
-                with st.spinner("Consulting Claude…"):
+                with st.spinner(f"Consulting {selected_llm.split()[0]}…"):
                     try:
                         reco = generate_recommendation(
                             buy_signal=buy_df.to_dict(),
                             sell_signal=sell_df.to_dict(),
                             stock_details={"Stock Name": symbol,
                                            "Strategy": strategy},
+                            provider=selected_llm,
+                            api_key=user_api_key,
                         )
                         st.session_state[f"reco_{symbol}"] = reco
                     except Exception as e:
-                        st.error(f"Claude error: {e}")
+                        st.error(f"Error: {e}")
 
         reco_text = st.session_state.get(f"reco_{symbol}", "")
         if reco_text:
@@ -334,7 +409,8 @@ def render():
         else:
             st.markdown(
                 f"<div class='reco-box' style='color:{MUTED}'>"
-                f"Click Generate to get an AI recommendation.</div>",
+                f"{'Select an LLM and enter your API key, then click Generate.' if not is_admin else 'Click Generate to get an AI recommendation.'}"
+                f"</div>",
                 unsafe_allow_html=True,
             )
 

@@ -9,21 +9,17 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-from config import ACCENT, MUTED, CARD_BG, BORDER, TEXT, BG
+from config import ACCENT, MUTED, CARD_BG, BORDER, TEXT, BG, RED
+from utility.auth import init_users_table
+from views.login import render as login_page
 from views.deep_dive import render as deep_dive_page
 from views.market_overview import render as market_overview_page
+from views.admin import render as admin_page
 
-PAGES = {
-    "Market Overview": market_overview_page,
-    "Stock Deep Dive": deep_dive_page,
-}
+# Ensure users table + default admin exist
+init_users_table()
 
-PAGE_ICONS = {
-    "Market Overview": "🌍",
-    "Stock Deep Dive": "📈",
-}
-
-# ── Global CSS (sidebar + app shell) ─────────────────────────────────────────
+# ── Global CSS ────────────────────────────────────────────────────────────────
 st.markdown(f"""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@300;400;500;700&display=swap');
@@ -68,7 +64,7 @@ section[data-testid="stSidebar"] div[data-testid="stRadio"] label {{
     color: {MUTED} !important;
     font-size: 12px !important;
     letter-spacing: 0.5px !important;
-    transition: color 0.15s ease, background 0.15s ease, border-color 0.15s ease !important;
+    transition: color 0.15s, background 0.15s, border-color 0.15s !important;
     width: 100% !important;
 }}
 
@@ -110,8 +106,44 @@ section[data-testid="stSidebar"] ::-webkit-scrollbar-thumb {{
     padding-bottom: 1rem !important;
     max-width: 100% !important;
 }}
+
+/* ── Sign out button ── */
+button[data-testid="baseButton-secondary"][kind="secondary"]#logout,
+section[data-testid="stSidebar"] button[key="logout"],
+section[data-testid="stSidebar"] div[data-testid="stButton"]:last-of-type > button {{
+    background: {RED}18 !important;
+    border: 1px solid {RED}55 !important;
+    color: {RED} !important;
+    font-family: 'IBM Plex Mono', monospace !important;
+    font-size: 10px !important;
+    letter-spacing: 1.5px !important;
+    border-radius: 4px !important;
+    padding: 7px 12px !important;
+    width: 100% !important;
+    transition: background 0.15s, border-color 0.15s !important;
+}}
+section[data-testid="stSidebar"] div[data-testid="stButton"]:last-of-type > button:hover {{
+    background: {RED}30 !important;
+    border-color: {RED} !important;
+}}
 </style>
 """, unsafe_allow_html=True)
+
+# ── Auth gate ─────────────────────────────────────────────────────────────────
+if "auth_user" not in st.session_state:
+    login_page()
+    st.stop()
+
+user     = st.session_state.auth_user
+is_admin = user["role"] == "admin"
+
+# ── Build page list based on role ─────────────────────────────────────────────
+PAGES = {
+    "Market Overview": ("🌍", market_overview_page),
+    "Stock Deep Dive":  ("📈", deep_dive_page),
+}
+if is_admin:
+    PAGES["Admin Panel"] = ("⚙️", admin_page)
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 with st.sidebar:
@@ -131,25 +163,48 @@ with st.sidebar:
     selected = st.radio(
         "nav",
         list(PAGES.keys()),
-        format_func=lambda x: f"{PAGE_ICONS[x]}  {x}",
+        format_func=lambda x: f"{PAGES[x][0]}  {x}",
         label_visibility="collapsed",
     )
 
-    # Footer pinned to bottom
+    st.markdown("<div style='height:240px'></div>", unsafe_allow_html=True)
+
+    # ── User card ─────────────────────────────────────────────────────────────
+    role_color    = ACCENT if is_admin else MUTED
+    role_label    = "ADMIN" if is_admin else "USER"
+    avatar_letter = user["username"][0].upper()
+
     st.markdown(f"""
-        <div style='position:fixed;bottom:0;width:209px;
-                    border-top:1px solid {BORDER};background:{CARD_BG};
-                    padding:14px 20px 16px 20px;'>
-            <div style='display:flex;align-items:center;gap:7px;margin-bottom:5px'>
-                <div style='width:6px;height:6px;border-radius:50%;
-                            background:{ACCENT};box-shadow:0 0 6px {ACCENT}99'></div>
-                <span style='color:{MUTED};font-size:9px;letter-spacing:1.5px'>NGX LIVE</span>
-            </div>
-            <div style='color:{MUTED};font-size:8px;letter-spacing:2px;opacity:0.6'>
-                v1.0 · Nigerian Exchange
+        <div style='border-top:1px solid {BORDER};padding:14px 16px 10px 16px'>
+            <div style='display:flex;align-items:center;gap:10px'>
+                <div style='width:30px;height:30px;border-radius:50%;flex-shrink:0;
+                            background:{ACCENT}22;border:1px solid {ACCENT}55;
+                            display:flex;align-items:center;justify-content:center;
+                            color:{ACCENT};font-size:12px;font-weight:700'>
+                    {avatar_letter}
+                </div>
+                <div>
+                    <div style='color:{TEXT};font-size:12px;font-weight:500'>
+                        {user["username"]}
+                    </div>
+                    <div style='display:flex;align-items:center;gap:5px;margin-top:2px'>
+                        <div style='width:5px;height:5px;border-radius:50%;
+                                    background:{ACCENT};
+                                    box-shadow:0 0 5px {ACCENT}99'></div>
+                        <span style='color:{role_color};font-size:9px;
+                                     letter-spacing:1.5px'>{role_label}</span>
+                    </div>
+                </div>
             </div>
         </div>
     """, unsafe_allow_html=True)
 
+    # ── Sign out ──────────────────────────────────────────────────────────────
+    st.markdown("<div style='padding:0 16px 16px 16px'>", unsafe_allow_html=True)
+    if st.button("⏻  SIGN OUT", key="logout", use_container_width=True):
+        del st.session_state.auth_user
+        st.rerun()
+    st.markdown("</div>", unsafe_allow_html=True)
+
 # ── Render page ───────────────────────────────────────────────────────────────
-PAGES[selected]()
+PAGES[selected][1]()
