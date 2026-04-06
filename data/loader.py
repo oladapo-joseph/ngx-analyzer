@@ -6,7 +6,7 @@ from dotenv import dotenv_values
 from utility.db import connect_to_db, close_connection
 
 _env = dotenv_values(".env")
-_DB_PATH = _env.get("DB_PATH", "ngx.sqlite")
+_DB_PATH = "utility/ngx.sqlite"
 
 
 @st.cache_data(ttl=300, show_spinner=False)

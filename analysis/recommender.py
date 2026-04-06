@@ -7,7 +7,7 @@ from langchain_core.output_parsers import StrOutputParser
 from dotenv import load_dotenv
 import os 
 
-load_dotenv(".env")
+load_dotenv()
 
 _TEMPLATE = """
 You are a financial analyst specialising in African equity markets.
